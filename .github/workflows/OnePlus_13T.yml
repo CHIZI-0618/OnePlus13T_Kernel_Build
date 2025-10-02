@@ -1,0 +1,169 @@
+name: OnePlus_13T_Kernel_Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_type:
+        type: choice
+        description: "使用 KSU，MKSU 或 KSU_NEXT(选择 None 表示不启用)"
+        required: false
+        default: ''
+        options:
+          - None
+          - KSU
+          - MKSU
+          - KSU_NEXT
+      enable_HMBird:
+        description: "是否添加风驰驱动"
+        required: false
+        type: boolean
+        default: false
+      better_net:
+        description: '是否开启网络功能增强配置'
+        required: false
+        type: boolean
+        default: false
+      baseband_guard:
+        description: '是否开启内核级基带保护'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: OnePlus_13T Kernel Build
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+    steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends libelf-dev tree
+
+      - name: Configure Git and repo
+        run: |
+          git config --global user.email "bot@kernelsu.org"
+          git config --global user.name "KernelSUBot"
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+          chmod a+x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+
+      - name: Initialize repo and sync
+        run: |
+          mkdir kernel_workspace && cd kernel_workspace
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_13t.xml --depth=1
+          repo sync -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
+          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+
+      - name: Set up KSU
+        if: ${{ inputs.ksu_type != 'None' }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          if [ "${{ inputs.ksu_type }}" = "KSU" ]; then
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          elif [ "${{ inputs.ksu_type }}" = "MKSU" ]; then
+            curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh" | bash -s main
+          elif [ "${{ inputs.ksu_type }}" = "KSU_NEXT" ]; then
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+          fi
+
+      - name: Apply HMBird GKI patch
+        if: ${{ inputs.enable_HMBird }}
+        run: |
+          git clone https://github.com/HanKuCha/sched_ext.git && rm -rf sched_ext/.git sched_ext/README.md
+          cp -r ./sched_ext/* kernel_workspace/kernel_platform/common/kernel/sched/
+          cp hmbird_patch.c kernel_workspace/kernel_platform/common/drivers/
+          cd kernel_workspace/kernel_platform/common/drivers
+          if ! grep -q "hmbird_patch.o" Makefile; then
+            echo "obj-y += hmbird_patch.o" >> Makefile
+          fi
+
+      - name: Add iptables extensions
+        if: ${{ inputs.better_net }}
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          echo "CONFIG_BPF_STREAM_PARSER=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_SET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_MAX=65534" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IP=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_LIST_SET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP6_NF_NAT=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./arch/arm64/configs/gki_defconfig
+
+      - name: Enable Baseband-guard
+        if: ${{ inputs.baseband_guard }}
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          echo "CONFIG_BBG=y" >> ./arch/arm64/configs/gki_defconfig
+          curl -LSs "https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh" | bash
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/landlock/landlock,baseband_guard/ } }' ./security/Kconfig
+
+      - name: Add make name
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          # 开启O2编译优化配置
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./arch/arm64/configs/gki_defconfig
+          sed -i 's/${scm_version}//' ./scripts/setlocalversion
+          sed -i 's/-4k//g' ./arch/arm64/configs/gki_defconfig
+          # 禁用 defconfig 检查
+          sed -i 's/check_defconfig//' ./build.config.gki
+
+      - name: Build Kernel
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin:$PATH"
+
+          make -j$(nproc --all) \
+            LLVM=1 \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CC=clang \
+            PAHOLE=pahole \
+            LD=ld.lld \
+            HOSTLD=ld.lld \
+            O=out \
+            KCFLAGS+=-O2 \
+            gki_defconfig all
+
+      - name: Make AnyKernel3
+        run: |
+          git clone https://github.com/Kernel-SU/AnyKernel3.git --depth=1
+          cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3/
+          # tree kernel_workspace/kernel_platform/common/out/arch/arm64/ > ./AnyKernel3/tree.txt || true
+
+      - name: Upload AnyKernel3
+        uses: actions/upload-artifact@v4
+        with:
+          name: PKX110_15.0.2.500(CN01)_AnyKernel3${{ inputs.ksu_type != 'None' && format('_{0}', inputs.ksu_type) || '' }}${{ inputs.enable_HMBird && '_hmbird' || '' }}${{ inputs.better_net && '_ipt' || '' }}${{ inputs.baseband_guard && '_bbg' || '' }}
+          path: ./AnyKernel3/*
