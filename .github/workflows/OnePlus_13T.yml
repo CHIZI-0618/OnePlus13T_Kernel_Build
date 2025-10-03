@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       ksu_type:
-        type: choice
-        description: "使用 KSU，MKSU 或 KSU_NEXT(选择 None 表示不启用)"
+        description: "使用 KSU，MKSU 或 KSU_NEXT(默认 None 表示不启用)"
         required: false
-        default: ''
+        type: choice
         options:
           - None
           - KSU
           - MKSU
           - KSU_NEXT
+        default: 'None'
       enable_HMBird:
         description: "是否添加风驰驱动"
         required: false
@@ -31,7 +31,7 @@ on:
 
 jobs:
   build:
-    name: OnePlus_13T Kernel Build
+    name: OnePlus 13T Kernel Build
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -70,7 +70,7 @@ jobs:
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
 
-      - name: Set up KSU
+      - name: Setup KSU
         if: ${{ inputs.ksu_type != 'None' }}
         run: |
           cd kernel_workspace/kernel_platform
@@ -133,8 +133,6 @@ jobs:
       - name: Add make name
         run: |
           cd kernel_workspace/kernel_platform/common
-          # 开启O2编译优化配置
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./scripts/setlocalversion
           sed -i 's/-4k//g' ./arch/arm64/configs/gki_defconfig
           # 禁用 defconfig 检查
