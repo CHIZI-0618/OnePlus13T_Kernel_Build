@@ -13,7 +13,7 @@ on:
           - MKSU
           - KSU_NEXT
         default: 'None'
-      enable_HMBird:
+      Apply_SCHED:
         description: "是否添加风驰驱动"
         required: false
         type: boolean
@@ -52,7 +52,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get install -y --no-install-recommends libelf-dev tree
+          sudo apt-get install -y --no-install-recommends libelf-dev tree dos2unix
 
       - name: Configure Git and repo
         run: |
@@ -65,10 +65,31 @@ jobs:
       - name: Initialize repo and sync
         run: |
           mkdir kernel_workspace && cd kernel_workspace
-          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_13t.xml --depth=1
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_13t_b.xml --depth=1
           repo sync -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+
+      # OGKI转换GKI，无需修改 dtbo 开机
+      - name: Apply Convert HMBIRD_OGKI to HMBIRD_GKI
+        run: |
+          cp hmbird_patch.c kernel_workspace/kernel_platform/common/drivers/
+          cd kernel_workspace/kernel_platform/common/drivers
+          if ! grep -q "hmbird_patch.o" Makefile; then
+            echo "obj-y += hmbird_patch.o" >> Makefile
+          fi
+
+#      - name: Apply SCHED
+#        if: ${{ inputs.Apply_SCHED }}
+#        run: |
+#          git clone https://github.com/HanKuCha/sched_ext.git && rm -rf sched_ext/.git sched_ext/README.md
+#          cp -r ./sched_ext/* kernel_workspace/kernel_platform/common/kernel/sched/
+
+      - name: Apply SCHED
+        if: ${{ inputs.Apply_SCHED }}
+        run: |
+          dos2unix fengchi_oneplus_13t_w.patch
+          patch -d kernel_workspace/kernel_platform/common -p1 -F 3 < fengchi_oneplus_13t_w.patch
 
       - name: Setup KSU
         if: ${{ inputs.ksu_type != 'None' }}
@@ -76,22 +97,23 @@ jobs:
           cd kernel_workspace/kernel_platform
           if [ "${{ inputs.ksu_type }}" = "KSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+            KSU_DIR="KernelSU"
           elif [ "${{ inputs.ksu_type }}" = "MKSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh" | bash -s main
+            KSU_DIR="KernelSU"
           elif [ "${{ inputs.ksu_type }}" = "KSU_NEXT" ]; then
             curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+            KSU_DIR="KernelSU-Next"
           fi
 
-      - name: Apply HMBird GKI patch
-        if: ${{ inputs.enable_HMBird }}
-        run: |
-          git clone https://github.com/HanKuCha/sched_ext.git && rm -rf sched_ext/.git sched_ext/README.md
-          cp -r ./sched_ext/* kernel_workspace/kernel_platform/common/kernel/sched/
-          cp hmbird_patch.c kernel_workspace/kernel_platform/common/drivers/
-          cd kernel_workspace/kernel_platform/common/drivers
-          if ! grep -q "hmbird_patch.o" Makefile; then
-            echo "obj-y += hmbird_patch.o" >> Makefile
-          fi
+          cd "$KSU_DIR"
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          COMMIT_DATE=$(git log -1 --format=%cd --date=short)
+
+          echo "=== KernelSU Version Information ==="
+          echo "KernelSU Type: ${{ inputs.ksu_type }}"
+          echo "Commit Hash: $COMMIT_HASH"
+          echo "Commit Date: $COMMIT_DATE"
 
       - name: Add iptables extensions
         if: ${{ inputs.better_net }}
@@ -121,39 +143,41 @@ jobs:
           echo "CONFIG_IP6_NF_NAT=y" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./arch/arm64/configs/gki_defconfig
 
-      - name: Enable Baseband-guard
+      - name: Setup Baseband-guard
         if: ${{ inputs.baseband_guard }}
         run: |
           cd kernel_workspace/kernel_platform/common
           curl -LSs "https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh" | bash
           echo "CONFIG_BBG=y" >> ./arch/arm64/configs/gki_defconfig
-          echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> ./arch/arm64/configs/gki_defconfig
-          # sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/landlock/landlock,baseband_guard/ } }' ./security/Kconfig
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' security/Kconfig
 
-      - name: Add make name
+      - name: Other tasks
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          # 跳过将 uapi 标准头安装到 usr/include 目录的不必要操作，节省编译时间
+          echo "CONFIG_HEADERS_INSTALL=n" >> ./arch/arm64/configs/gki_defconfig
+          # 开启 O2 编译优化配置
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./arch/arm64/configs/gki_defconfig
+          # 禁用 defconfig 检查
+          sed -i 's/check_defconfig//' ./build.config.gki
+
+      - name: Rename make name
         run: |
           cd kernel_workspace/kernel_platform/common
           sed -i 's/${scm_version}//' ./scripts/setlocalversion
           sed -i 's/-4k//g' ./arch/arm64/configs/gki_defconfig
-          # 禁用 defconfig 检查
-          sed -i 's/check_defconfig//' ./build.config.gki
 
       - name: Build Kernel
         run: |
           cd kernel_workspace/kernel_platform/common
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin:$PATH"
 
-          make -j$(nproc --all) \
-            LLVM=1 \
-            ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang \
-            PAHOLE=pahole \
-            LD=ld.lld \
-            HOSTLD=ld.lld \
-            O=out \
-            KCFLAGS+=-O2 \
-            gki_defconfig all
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CC=clang PAHOLE=pahole LD=ld.lld HOSTLD=ld.lld \
+          O=out gki_defconfig && \
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          CC=clang PAHOLE=pahole LD=ld.lld HOSTLD=ld.lld KCFLAGS+=-O2 \
+          O=out Image
 
       - name: Make AnyKernel3
         run: |
@@ -164,5 +188,5 @@ jobs:
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v4
         with:
-          name: PKX110_15.0.2.500(CN01)_AnyKernel3${{ inputs.ksu_type != 'None' && format('_{0}', inputs.ksu_type) || '' }}${{ inputs.enable_HMBird && '_hmbird' || '' }}${{ inputs.better_net && '_ipt' || '' }}${{ inputs.baseband_guard && '_bbg' || '' }}
+          name: PKX110_AnyKernel3${{ inputs.ksu_type != 'None' && format('_{0}', inputs.ksu_type) || '' }}${{ inputs.Apply_SCHED && '_sched' || '' }}${{ inputs.better_net && '_ipt' || '' }}${{ inputs.baseband_guard && '_bbg' || '' }}
           path: ./AnyKernel3/*
