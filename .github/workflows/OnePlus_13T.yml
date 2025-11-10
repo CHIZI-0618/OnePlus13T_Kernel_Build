@@ -23,11 +23,6 @@ on:
         required: false
         type: boolean
         default: false
-      disable_ipv6:
-        description: "是否完全禁用 IPv6 支持"
-        required: false
-        type: boolean
-        default: false
       baseband_guard:
         description: "是否开启内核级基带保护"
         required: true
