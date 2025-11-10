@@ -34,9 +34,13 @@ jobs:
     name: OnePlus 13T Kernel Build
     runs-on: ubuntu-latest
     env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_COMPILERCHECK: "none"
+      CCACHE_COMPRESS: "1"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
+      CCACHE_DIR: "$HOME/.ccache_oneplus_13t"
+      CCACHE_MAXSIZE: "5G"
+
     steps:
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
@@ -52,7 +56,25 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get install -y --no-install-recommends libelf-dev tree dos2unix
+          sudo apt-get install -y --no-install-recommends libelf-dev tree dos2unix ccache
+
+      - name: Cache ccache
+        id: ccache-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-oneplus-13t-v1
+          restore-keys: |
+            ccache-${{ runner.os }}-oneplus-13t-
+
+      - name: Cache prebuilts (clang & build-tools)
+        id: prebuilts-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928
+            kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86
+          key: prebuilts-${{ runner.os }}-v1
 
       - name: Configure Git and repo
         run: |
@@ -64,9 +86,20 @@ jobs:
 
       - name: Initialize repo and sync
         run: |
-          mkdir kernel_workspace && cd kernel_workspace
-          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_13t_b.xml --depth=1
-          repo sync -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
+          mkdir -p kernel_workspace && cd kernel_workspace
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git \
+            -b refs/heads/oneplus/sm8750 -m oneplus_13t_b.xml --depth=1
+
+          if [ "${{ steps.prebuilts-cache.outputs.cache-hit }}" = "true" ]; then
+            repo sync kernel_platform/common \
+              -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
+          else
+            repo sync kernel_platform/common \
+                      kernel_platform/prebuilts/clang/host/linux-x86 \
+                      kernel_platform/prebuilts/kernel-build-tools \
+              -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
+          fi
+
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
 
@@ -78,12 +111,6 @@ jobs:
           if ! grep -q "hmbird_patch.o" Makefile; then
             echo "obj-y += hmbird_patch.o" >> Makefile
           fi
-
-#      - name: Apply SCHED
-#        if: ${{ inputs.Apply_SCHED }}
-#        run: |
-#          git clone https://github.com/HanKuCha/sched_ext.git && rm -rf sched_ext/.git sched_ext/README.md
-#          cp -r ./sched_ext/* kernel_workspace/kernel_platform/common/kernel/sched/
 
       - name: Apply SCHED
         if: ${{ inputs.Apply_SCHED }}
@@ -174,12 +201,23 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin:$PATH"
 
+          mkdir -p "${{ env.CCACHE_DIR }}"
+          ccache -M "${{ env.CCACHE_MAXSIZE }}"
+
+          ccache -z
+          echo "=== 构建前 CCache 状态 ==="
+          ccache -s
+
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-          CC=clang PAHOLE=pahole LD=ld.lld HOSTLD=ld.lld \
-          O=out gki_defconfig && \
+          CC="ccache clang" PAHOLE=pahole LD=ld.lld HOSTLD=ld.lld \
+          O=out gki_defconfig
+
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-          CC=clang PAHOLE=pahole LD=ld.lld HOSTLD=ld.lld KCFLAGS+=-O2 \
+          CC="ccache clang" PAHOLE=pahole LD=ld.lld HOSTLD=ld.lld KCFLAGS+=-O2 KCFLAGS+=-Wno-error \
           O=out Image
+
+          echo "=== 构建后 CCache 状态 ==="
+          ccache -s
 
       - name: Make AnyKernel3
         run: |
