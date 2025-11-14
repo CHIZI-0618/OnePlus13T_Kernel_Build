@@ -13,6 +13,11 @@ on:
           - MKSU
           - KSU_NEXT
         default: "None"
+      pull_kernel_src:
+        description: "是否拉取远程内核源码(否则使用缓存)"
+        required: false
+        type: boolean
+        default: false
       Apply_SCHED:
         description: "是否添加风驰驱动"
         required: false
@@ -38,34 +43,15 @@ jobs:
       CCACHE_COMPRESS: "1"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
-      CCACHE_DIR: "$HOME/.ccache_oneplus_13t"
-      CCACHE_MAXSIZE: "5G"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache_oneplus_13t
+      CCACHE_MAXSIZE: "3G"
 
     steps:
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 2048
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get install -y --no-install-recommends libelf-dev tree dos2unix ccache
-
-      - name: Cache ccache
-        id: ccache-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-oneplus-13t-v1
-          restore-keys: |
-            ccache-${{ runner.os }}-oneplus-13t-
 
       - name: Cache prebuilts (clang & build-tools)
         id: prebuilts-cache
@@ -75,6 +61,22 @@ jobs:
             kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928
             kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86
           key: prebuilts-${{ runner.os }}-v1
+
+      - name: Cache kernel source
+        id: kernel-src-cache
+        uses: actions/cache@v4
+        with:
+          path: kernel_workspace/kernel_platform/common
+          key: kernel-src-v6.6.89
+          restore-keys: 
+            kernel-src-v6.6.89
+
+      - name: Cache ccache
+        id: ccache-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-oneplus-13t-v1
 
       - name: Configure Git and repo
         run: |
@@ -90,20 +92,23 @@ jobs:
           repo init -u https://github.com/OnePlusOSS/kernel_manifest.git \
             -b refs/heads/oneplus/sm8750 -m oneplus_13t_b.xml --depth=1
 
-          if [ "${{ steps.prebuilts-cache.outputs.cache-hit }}" = "true" ]; then
+          if [ "${{ inputs.pull_kernel_src }}" = "true" ] || \
+             [ "${{ steps.kernel-src-cache.outputs.cache-hit }}" = "false" ]; then
             repo sync kernel_platform/common \
-              -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
-          else
-            repo sync kernel_platform/common \
-                      kernel_platform/prebuilts/clang/host/linux-x86 \
+              -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle \
+              -j$(nproc --all)
+          fi
+
+          if [ "${{ steps.prebuilts-cache.outputs.cache-hit }}" = "false" ]; then
+            repo sync kernel_platform/prebuilts/clang/host/linux-x86 \
                       kernel_platform/prebuilts/kernel-build-tools \
-              -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle -j$(nproc --all)
+              -c --force-sync --optimized-fetch --prune --no-tags --no-clone-bundle \
+              -j$(nproc --all)
           fi
 
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
-          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
 
-      # OGKI转换GKI，无需修改 dtbo 开机
+      # OGKI 转换 GKI，无需修改 dtbo 开机
       - name: Apply Convert HMBIRD_OGKI to HMBIRD_GKI
         run: |
           cp hmbird_patch.c kernel_workspace/kernel_platform/common/drivers/
@@ -216,6 +221,9 @@ jobs:
           CC="ccache clang" PAHOLE=pahole LD=ld.lld HOSTLD=ld.lld KCFLAGS+=-O2 KCFLAGS+=-Wno-error \
           O=out Image
 
+          git restore . || true
+          git clean -fd || true
+
           echo "=== 构建后 CCache 状态 ==="
           ccache -s
 
@@ -230,3 +238,9 @@ jobs:
         with:
           name: PKX110_AnyKernel3${{ inputs.ksu_type != 'None' && format('_{0}', inputs.ksu_type) || '' }}${{ inputs.Apply_SCHED && '_sched' || '' }}${{ inputs.better_net && '_ipt' || '' }}${{ inputs.baseband_guard && '_bbg' || '' }}
           path: ./AnyKernel3/*
+
+      - name: Force Save Ccache
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-oneplus-13t-v1
