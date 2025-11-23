@@ -3,16 +3,6 @@ name: OnePlus 13T Kernel Build
 on:
   workflow_dispatch:
     inputs:
-      ksu_type:
-        description: "使用 KSU，MKSU 或 KSU_NEXT(默认 None 表示不启用)"
-        required: false
-        type: choice
-        options:
-          - None
-          - KSU
-          - MKSU
-          - KSU_NEXT
-        default: "None"
       pull_kernel_src:
         description: "是否拉取远程内核源码(否则使用缓存)"
         required: false
@@ -112,6 +102,7 @@ jobs:
 
       # OGKI 转换 GKI，无需修改 dtbo 开机
       - name: Apply Convert HMBIRD_OGKI to HMBIRD_GKI
+        if: ${{ !inputs.Apply_SCHED }}
         run: |
           cp hmbird_patch.c kernel_workspace/kernel_platform/common/drivers/
           cd kernel_workspace/kernel_platform/common/drivers
@@ -122,30 +113,19 @@ jobs:
       - name: Apply SCHED
         if: ${{ inputs.Apply_SCHED }}
         run: |
-          dos2unix fengchi_oneplus_13t_w.patch
-          patch -d kernel_workspace/kernel_platform/common -p1 -F 3 < fengchi_oneplus_13t_w.patch
+          git clone https://github.com/Numbersf/SCHED_PATCH.git -b sm8750
+          dos2unix SCHED_PATCH/fengchi_oneplus_13t_b.patch
+          patch -d kernel_workspace/kernel_platform/common -p1 -F 3 < SCHED_PATCH/fengchi_oneplus_13t_b.patch
 
       - name: Setup KSU
-        if: ${{ inputs.ksu_type != 'None' }}
         run: |
           cd kernel_workspace/kernel_platform
-          if [ "${{ inputs.ksu_type }}" = "KSU" ]; then
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-            KSU_DIR="KernelSU"
-          elif [ "${{ inputs.ksu_type }}" = "MKSU" ]; then
-            curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh" | bash -s main
-            KSU_DIR="KernelSU"
-          elif [ "${{ inputs.ksu_type }}" = "KSU_NEXT" ]; then
-            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
-            KSU_DIR="KernelSU-Next"
-          fi
-
-          cd "$KSU_DIR"
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          cd KernelSU
           COMMIT_HASH=$(git rev-parse --short HEAD)
           COMMIT_DATE=$(git log -1 --format=%cd --date=short)
 
           echo "=== KernelSU Version Information ==="
-          echo "KernelSU Type: ${{ inputs.ksu_type }}"
           echo "Commit Hash: $COMMIT_HASH"
           echo "Commit Date: $COMMIT_DATE"
 
@@ -238,7 +218,7 @@ jobs:
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v4
         with:
-          name: PKX110_AnyKernel3${{ inputs.ksu_type != 'None' && format('_{0}', inputs.ksu_type) || '' }}${{ inputs.Apply_SCHED && '_sched' || '' }}${{ inputs.better_net && '_ipt' || '' }}${{ inputs.baseband_guard && '_bbg' || '' }}
+          name: PKX110_AnyKernel3_ksu${{ inputs.Apply_SCHED && '_sched' || '' }}${{ inputs.better_net && '_ipt' || '' }}${{ inputs.baseband_guard && '_bbg' || '' }}
           path: ./AnyKernel3/*
 
       - name: Force Save Ccache
